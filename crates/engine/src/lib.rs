@@ -15,6 +15,8 @@ pub mod arc_handles;
 pub mod background;
 pub mod batch;
 pub mod board;
+pub mod board_table;
+pub mod board_templates;
 pub mod booleans;
 pub mod branches;
 pub mod catalog;
@@ -1640,6 +1642,8 @@ mod binding_lists_tests;
 #[cfg(test)]
 mod board_connector_tests;
 #[cfg(test)]
+mod board_tables_tests;
+#[cfg(test)]
 mod board_tests;
 #[cfg(test)]
 mod board_tools_tests;
@@ -1647,6 +1651,8 @@ mod board_tools_tests;
 mod booleans_tests;
 #[cfg(test)]
 mod bound_alpha_tests;
+#[cfg(test)]
+mod branch_live_tests;
 #[cfg(test)]
 mod branch_tests;
 #[cfg(test)]
@@ -1959,6 +1965,8 @@ mod version_preview_tests;
 mod version_tests;
 #[cfg(test)]
 mod view_behaviour_tests;
+#[cfg(test)]
+mod widget_input_tests;
 #[cfg(test)]
 mod widgets_tests;
 
