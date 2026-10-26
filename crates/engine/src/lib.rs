@@ -117,6 +117,18 @@ impl From<figcraft_doc::DocError> for EngineError {
     }
 }
 
+impl EngineError {
+    /// This error from step `step` of a batch, saying so in its message; the kind stays (errors
+    /// without a message stay as they are).
+    fn at_step(self, step: usize) -> Self {
+        match self {
+            EngineError::BadParams { cmd, msg } => EngineError::BadParams { cmd, msg: format!("step {step}: {msg}") },
+            EngineError::Other(msg) => EngineError::Other(format!("step {step}: {msg}")),
+            e => e,
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, EngineError>;
 
 pub fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
@@ -360,6 +372,7 @@ pub struct DocState {
     /// The last duplicate while its copies are the selection: Duplicate repeats its offset (see
     /// [`cmd::edit::Duplicated`]; not saved).
     pub(crate) last_duplicate: Option<cmd::edit::Duplicated>,
+    images_left_in_file: Option<(String, usize)>,
 }
 
 /// A version shown on the canvas in place of the document: read-only until it's restored or the
@@ -422,9 +435,19 @@ impl DocState {
             rotation_origin: None,
             view_from_prefs: false,
             last_duplicate: None,
+            images_left_in_file: None,
         };
         st.zoom_to_fit();
         st
+    }
+
+    pub fn with_images_left_in_file(mut self, path: &str, count: usize) -> Self {
+        self.images_left_in_file = (count > 0).then(|| (path.to_string(), count));
+        self
+    }
+
+    pub fn images_lost_saving_to(&self, path: &str) -> Option<usize> {
+        self.images_left_in_file.as_ref().filter(|(file, _)| file_access::same_file(file, path)).map(|(_, count)| *count)
     }
 
     /// The selected ruler guide (its owner and index): it counts while no layer is selected and it
@@ -1258,7 +1281,8 @@ impl Session {
     /// so its steps resolve references the same way, inside its own [`Session::grouped`].
     pub fn batch_step(&mut self, scope: &mut BatchScope, cmd: &str, params: &Value) -> Result<()> {
         let p = if cmd == "command.batch" { params.clone() } else { scope.resolve(params)? };
-        let v = self.execute(cmd, &p)?;
+        // Say which step failed; a nested batch names its own steps.
+        let v = self.execute(cmd, &p).map_err(|e| if cmd == "command.batch" { e } else { e.at_step(scope.next_step()) })?;
         scope.push(v);
         Ok(())
     }
@@ -1713,6 +1737,8 @@ mod html_codegen_tests;
 mod huge_stroke_tests;
 #[cfg(test)]
 mod id_params_behaviour_tests;
+#[cfg(test)]
+mod images_left_in_file_tests;
 #[cfg(test)]
 mod import_export_tests;
 #[cfg(test)]
