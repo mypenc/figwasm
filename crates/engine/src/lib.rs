@@ -1895,6 +1895,8 @@ mod proto_delay_tests;
 #[cfg(test)]
 mod proto_multi_tests;
 #[cfg(test)]
+mod proto_overlay_anchor_tests;
+#[cfg(test)]
 mod proto_polish_tests;
 #[cfg(test)]
 mod proto_present_tests;
@@ -1995,6 +1997,8 @@ mod variants_discovery_tests;
 #[cfg(test)]
 mod vector_behaviour_tests;
 #[cfg(test)]
+mod vector_drawable_export_tests;
+#[cfg(test)]
 mod vector_fill_rule_tests;
 #[cfg(test)]
 mod vector_multi_behaviour_tests;
@@ -2008,6 +2012,8 @@ mod version_preview_tests;
 mod version_tests;
 #[cfg(test)]
 mod view_behaviour_tests;
+#[cfg(test)]
+mod vue_codegen_tests;
 #[cfg(test)]
 mod widget_input_tests;
 #[cfg(test)]
