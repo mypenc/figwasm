@@ -396,20 +396,25 @@ one undo step and returns the ids it made:
   (`Shift+Cmd/Ctrl+Enter` in the app does both).
 - `board.shape {shape, x, y, width?, height?, text?, color?, parent?}` → `{id, text}`: a shape with centred,
   wrapping text: `rectangle roundedRectangle ellipse diamond triangle speechBubble chevron`.
-- `board.connector {from, to, fromSide?, toSide?, style?: straight|elbow, startCap?, endCap?, label?}`
+- `board.connector {from, to, fromSide?, toSide?, style?: straight|elbow|curved, startCap?, endCap?, label?}`
   → `{id, label?}`: `from`/`to` are layer ids or `{x, y}` page points; sides are `auto` (the side
   facing the other end) or `top right bottom left`; caps are stroke caps (default an arrow at the
-  end). The connector re-routes itself whenever what it joins moves or resizes, also when someone
-  else in a live session moves it; a deleted end stays where it was as a point. `board.label {id,
-  text}` sets its label (empty removes it).
+  end). An elbow goes around the objects it joins when the short way would cross them; a curved
+  one leaves and arrives along the sides. The connector re-routes itself whenever what it joins
+  moves or resizes, also when someone else in a live session moves it; a deleted end stays where it
+  was as a point. `board.label {id, text}` sets its label (empty removes it).
+- `board.reattach {id?, end: from|to, target, side?}` → `{id}`: moves one end of a connector
+  (default the selected one; its label stands for it) onto `target`, a layer id or an `{x, y}`
+  page point where the end stays free. Refused when both ends would be on one layer or the target
+  is a connector. Dragging a selected connector's end handle in the app does the same.
 - `board.stamp {x, y, stamp: thumbsUp|heart|plusOne|star|question|check}` → `{id}`: a round badge
   centred there, with your name on it for hover.
 - `board.ink {path | points, highlighter?, color?, select? (default true)}` → `{id}`: a marker (or
   wide, see-through highlighter) stroke.
 - `board.setColor {ids?, color}`: stickies and shapes take it as their fill, connectors and ink as
-  their line. `board.setStyle {ids?, shape?, fontSize?, style?, startCap?, endCap?}`: a shape's
-  outline and text size, a connector's routing and arrowheads.
-- Tools for `pointer`: `tool.sticky {color?}`, `tool.shape {shape?}`, `tool.connector {style?}`
+  their line. `board.setStyle {ids?, shape?, fontSize?, style?: straight|elbow|curved, startCap?,
+  endCap?}`: a shape's outline and text size, a connector's routing and arrowheads.
+- Tools for `pointer`: `tool.sticky {color?}`, `tool.shape {shape?}`, `tool.connector {style?: straight|elbow|curved}`
   (drag from one object to another), `tool.marker {color?}`, `tool.highlighter {color?}`,
   `tool.eraser` (drag over strokes), `tool.stamp {stamp?}`; Text and Section are the usual tools.
 
@@ -424,6 +429,40 @@ one undo step and returns the ids it made:
 `from` and `to` are the `id`s the two `board.sticky` calls returned (here `{"id": 2, "text": 3}` and
 `{"id": 4, "text": 5}` in a new board without an author name; a sticky with its author's name takes
 one more id). In a `batch`, step references (`{"from": {"$step": 1}, "to": {"$step": 2}}`, the `id`s steps 1 and 2 returned) avoid counting.
+
+Running a session on a board: a countdown and votes. Both are part of the board, so everyone in a
+live session sees the same, and neither is an undo step (undo leaves them as they are). On a
+design file they refuse.
+
+- `board.timer {action: start|pause|resume|add|stop, minutes?}` → `{state, left, text, ends}`: one
+  countdown per board. `start` takes `minutes` (default 5) and `add` adds them (default 1), from
+  one second up to 1440 minutes in all; `pause` keeps the time left, `resume` counts it down again.
+  The timer keeps its end time (milliseconds since 1970) or, paused, the time left, and each
+  client counts down on its own clock. `board.timerState {}` reads it: `state` is `off`,
+  `running`, `paused` or `done` (it ran out: 0:00 until someone stops it), `left` milliseconds,
+  `text` as `m:ss` (or `h:mm:ss`).
+- `board.vote {action: start|cast|retract|end|clear, …}` → the vote as `board.voteResults` gives
+  it. One vote at a time: `start {votes? (per person, 1–99, default 3), on?: all|stickies|selection
+  (default all), ids? (with selection; default the selected layers)}` (a vote that ended may be
+  replaced; one still running is refused), `cast {id}` puts one of your votes on an object (several
+  on the same object are fine; once yours are used up it refuses), `retract {id}` takes one back,
+  `end` shows everyone's votes, `clear` removes the vote and its results. `voter` (any action)
+  votes as someone else, for scripts and tests; by default you are your live-session client, or
+  your name (`pref.userName`) when the file isn't shared. In the app a click on an object votes
+  while a vote runs, and a click on your badge (or an Alt-click) takes the vote back.
+- `board.voteResults {voter?}` → `{state: off|running|ended, votesPerPerson, on, by, left, mine:
+  [{id, votes}], voters, results?}`: while it runs you see your own votes only (`mine`, `left`) and
+  how many have voted; once it ends `results` lists `[{id, name, votes, rank}]`, most votes first
+  (ties share a rank), with `name` the sticky's text or the layer's name. Votes on deleted objects
+  don't count.
+
+```json
+{"command": "board.timer", "params": {"action": "start", "minutes": 10}}
+{"command": "board.vote", "params": {"action": "start", "votes": 2, "on": "stickies"}}
+{"command": "board.vote", "params": {"action": "cast", "id": 2}}
+{"command": "board.vote", "params": {"action": "end"}}
+{"command": "board.voteResults", "params": {}}
+```
 
 ### Sections, handoff and arrow keys
 
