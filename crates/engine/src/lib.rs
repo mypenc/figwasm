@@ -766,6 +766,12 @@ pub struct Clipboard {
     pub images: std::collections::BTreeMap<String, figcraft_doc::ImageData>,
     /// Copied properties (Copy properties / Paste properties).
     pub props: Option<Value>,
+    /// A copied fill or stroke row (`fill.copy`, `stroke.copy`): whether it's a fill, and the paint.
+    pub paint: Option<(bool, figcraft_color::Paint)>,
+    /// The stroke settings (`weight`, alignment, sides…) copied with a stroke's paint.
+    pub stroke: Option<figcraft_doc::StrokeProps>,
+    /// A copied effect row (`effect.copy`).
+    pub effect: Option<figcraft_doc::Effect>,
     /// The page-space bounds of the copied selection.
     pub bounds: Option<figcraft_geom::Rect>,
     pub source_doc: u64,
@@ -1826,6 +1832,8 @@ pub(crate) mod plugins_tests;
 #[cfg(test)]
 mod progressive_blur_tests;
 #[cfg(test)]
+mod property_copy_tests;
+#[cfg(test)]
 mod proto_behaviour_tests;
 #[cfg(test)]
 mod proto_conditional_tests;
@@ -1877,6 +1885,8 @@ mod shapebuilder_tests;
 mod shapes_behaviour_tests;
 #[cfg(test)]
 mod shortcut_parity_tests;
+#[cfg(test)]
+mod sketch_import_tests;
 #[cfg(test)]
 mod slot_tests;
 #[cfg(test)]
