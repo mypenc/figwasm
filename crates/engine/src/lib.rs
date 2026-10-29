@@ -307,6 +307,8 @@ mod huge_stroke_tests;
 #[cfg(test)]
 mod id_params_behaviour_tests;
 #[cfg(test)]
+mod image_crop_tests;
+#[cfg(test)]
 mod images_left_in_file_tests;
 #[cfg(test)]
 mod import_export_tests;
@@ -384,6 +386,8 @@ mod pdf_print_tests;
 mod pen_end_tests;
 #[cfg(test)]
 mod pen_overlay_tests;
+#[cfg(test)]
+mod penpot_export_tests;
 #[cfg(test)]
 mod pixel_preview_tests;
 #[cfg(test)]
