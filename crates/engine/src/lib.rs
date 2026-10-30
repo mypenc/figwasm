@@ -235,6 +235,8 @@ mod collab_undo_tests;
 #[cfg(test)]
 mod comment_agent_tests;
 #[cfg(test)]
+mod comment_link_tests;
+#[cfg(test)]
 mod comment_mentions_tests;
 #[cfg(test)]
 mod comments_polish_tests;
@@ -348,6 +350,8 @@ mod instance_resizing_tests;
 mod interaction_rollback_tests;
 #[cfg(test)]
 mod invite_links_tests;
+#[cfg(test)]
+mod jam_open_tests;
 #[cfg(test)]
 mod keymap_tests;
 #[cfg(test)]
