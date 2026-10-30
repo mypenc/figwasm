@@ -277,6 +277,8 @@ mod devmode_behaviour_tests;
 #[cfg(test)]
 mod devmode_tail_tests;
 #[cfg(test)]
+mod doc_list_paths_tests;
+#[cfg(test)]
 mod doc_urls_tests;
 #[cfg(test)]
 mod double_click_tests;
@@ -370,6 +372,8 @@ mod line_endings_tests;
 mod live_access_tests;
 #[cfg(test)]
 mod live_docs_tests;
+#[cfg(test)]
+mod live_peer_cap_tests;
 #[cfg(test)]
 mod live_share_tests;
 #[cfg(test)]
