@@ -72,6 +72,8 @@ mod comments_tests;
 #[cfg(test)]
 mod component_props_reorder_tests;
 #[cfg(test)]
+mod component_set_narrow_tests;
+#[cfg(test)]
 mod component_swap_default_tests;
 #[cfg(test)]
 mod component_swap_search_tests;
@@ -129,6 +131,8 @@ mod layers_keyboard_tests;
 mod layers_keys_tests;
 #[cfg(test)]
 mod layers_rename_tests;
+#[cfg(test)]
+mod library_beacon_tests;
 #[cfg(test)]
 mod live_chat_tests;
 #[cfg(test)]

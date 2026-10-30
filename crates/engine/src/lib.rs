@@ -361,6 +361,8 @@ mod jam_open_tests;
 #[cfg(test)]
 mod keymap_tests;
 #[cfg(test)]
+mod library_beacon_tests;
+#[cfg(test)]
 mod library_path_tests;
 #[cfg(test)]
 mod library_range_styles_tests;
@@ -416,6 +418,8 @@ mod paint_reorder_tests;
 mod paint_tests;
 #[cfg(test)]
 mod panels_behaviour_tests;
+#[cfg(test)]
+mod path_read_caps_tests;
 #[cfg(test)]
 mod pdf_print_tests;
 #[cfg(test)]
