@@ -1,9 +1,14 @@
 //! The glass effect: the backdrop seen through a pane whose edges curve down like a lens.
 //!
-//! Within `depth` of the outline the surface curves: the backdrop there is bent towards the inside
-//! (strongest at the very edge, `refraction` × `depth` far), each colour channel by a slightly
-//! different amount (`dispersion`, a rainbow fringe), and the rim catches the light: brightest
-//! where it faces `light_angle`, half as bright on the opposite side, spread wider by `splay`.
+//! Within `depth` of the outline the surface curves like a thick lens: the backdrop there is bent
+//! towards the inside, most a [`BEVEL`] in from the edge (`refraction` × `depth` far), falling off
+//! as the 3.5th power of the way out of the curve and gone `depth` further in, with a fifth as
+//! much on the bevel itself ([`bend_at`]). `splay` turns which way it bends, from along the edge's
+//! normal (0) to away from the layer's centre (1). Each colour channel bends by a different amount
+//! (`dispersion`, a rainbow fringe: red furthest, blue least, each smeared along the bend). The
+//! bevel catches the light as a thin line added to the backdrop ([`rim_light_at`]): fully where the
+//! edge faces `light_angle`, none below 0.35 of facing it, 0.6 as much on the opposite side; and a
+//! faint gradient runs across the curve, 5% darker where it faces the light and lighter opposite.
 //! `frost` blurs the backdrop first. Distances to the outline come from an exact Euclidean
 //! distance transform of the shape's coverage.
 //!
@@ -162,6 +167,115 @@ fn smooth_normals(dist: &[f32], w: usize, h: usize, r: usize) -> Vec<(f32, f32)>
         .collect()
 }
 
+/// The bevel along a glass's edge (document units): where the bend eases off before the edge.
+pub(crate) const BEVEL: f64 = 1.0;
+
+/// How sharply the bend falls off going in: the 3.5th power of the way out of the curve.
+const PROFILE_EXP: f32 = 3.5;
+
+/// The furthest the backdrop moves, as a share of `depth`.
+const MAX_BEND: f32 = 0.999;
+
+/// The bend on the bevel itself, as a share of [`MAX_BEND`] × `depth` × `refraction`.
+const RIM_BEND: f32 = 0.2;
+
+/// Steps of the dispersion window: each channel is sampled this many times along the bend, weighted
+/// by a triangle (the two end steps weigh nothing and are skipped).
+const DISPERSION_STEPS: usize = 8;
+
+/// The least an edge faces the light (the cosine between its outward normal and the light) and
+/// still catches some.
+const HL_LO: f32 = 0.35;
+
+/// How much of the light the side opposite it catches.
+const HL_SECONDARY: f32 = 0.6;
+
+/// The gradient across the curve at its strongest, a share of the light's intensity.
+const BROAD: f32 = 0.05;
+
+/// `x` from `a` to `b` as 0 to 1, clamped (a span under 1e-5 counts as 1e-5).
+fn lin(a: f32, b: f32, x: f32) -> f32 {
+    ((x - a) / (b - a).max(1e-5)).clamp(0.0, 1.0)
+}
+
+/// `x` from `a` to `b` as a smooth 0-to-1 step (Hermite), clamped.
+fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
+    let t = ((x - a) / (b - a).max(1e-5)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// How much of the rim light falls `x` pixels in from the edge, for a `bevel` pixels deep: all
+/// of it within a fifth of the bevel, none a bevel in.
+pub(crate) fn rim_light_at(x: f32, bevel: f32) -> f32 {
+    smoothstep(-bevel - 0.001, -0.2 * bevel, -x)
+}
+
+/// How much light an edge catches, `facing` being the cosine between its outward normal and the
+/// light: from [`HL_LO`] to fully facing it, and [`HL_SECONDARY`] as much facing away.
+fn catches(facing: f32) -> f32 {
+    smoothstep(HL_LO, 1.0, facing) + HL_SECONDARY * smoothstep(HL_LO, 1.0, -facing)
+}
+
+/// How strongly the gradient across the curve shows `x` pixels in from the edge (`depth` and
+/// `bevel` in pixels): fully on the bevel, falling as the square of the way in to none at `depth`.
+pub(crate) fn sheen_at(x: f32, depth: f32, bevel: f32) -> f32 {
+    lin(-depth, -bevel + 1e-4, -x).powi(2)
+}
+
+/// How far the backdrop moves at `x` pixels in from the edge, for a glass `depth` and [`BEVEL`]
+/// `bevel` deep (pixels) and `refraction` (0–1): a thick lens's profile, the most a bevel in from
+/// the edge, falling off as the 3.5th power of the way out of the curve to nothing `depth` further
+/// in, and a fifth as much on the bevel itself, eased between the two over its outer 70%.
+pub(crate) fn bend_at(x: f32, depth: f32, bevel: f32, refraction: f32) -> f32 {
+    // Past the curve (and the bevel's easing) nothing bends: the flat inside of the pane.
+    if x >= depth.max(1e-4) + bevel {
+        return 0.0;
+    }
+    let sd = -x;
+    let t = lin(-depth - bevel, -bevel, sd);
+    let most = MAX_BEND * depth;
+    let core = (t.powf(PROFILE_EXP) * depth * refraction).clamp(-most, most);
+    let rim = refraction * RIM_BEND * most;
+    let u = lin(-bevel - 1e-4, -0.3 * bevel, sd);
+    core + (rim - core) * u
+}
+
+/// The backdrop seen at pixel coordinates (`x`, `y`) moved by (`dx`, `dy`), its channels split by
+/// `k` (dispersion, 0–1): red moves up to `k` further, blue up to `k` less, each smeared along the
+/// move by a triangular window of [`DISPERSION_STEPS`]. One sample when `k` is too small to show.
+fn dispersed(frosted: &Pixmap, x: f32, y: f32, dx: f32, dy: f32, k: f32) -> [f32; 4] {
+    let at = |s: f32| sample(frosted, x + dx * s, y + dy * s);
+    if k < 0.001 {
+        let s = at(1.0);
+        return [s[0].min(s[3]), s[1].min(s[3]), s[2].min(s[3]), s[3]];
+    }
+    let last = (DISPERSION_STEPS - 1) as f32;
+    let (mut acc, mut sum) = ([0.0f32; 4], 0.0f32);
+    for i in 1..DISPERSION_STEPS - 1 {
+        let t = i as f32 / last - 0.5;
+        let w = 1.0 - (2.0 * t).abs();
+        let (r, g, b) = (at(1.0 + (t + 0.5) * k), at(1.0 + t * k), at(1.0 + (t - 0.5) * k));
+        acc[0] += r[0] * w;
+        acc[1] += g[1] * w;
+        acc[2] += b[2] * w;
+        acc[3] += r[3].max(g[3]).max(b[3]) * w;
+        sum += w;
+    }
+    let a = acc[3] / sum;
+    [(acc[0] / sum).min(a), (acc[1] / sum).min(a), (acc[2] / sum).min(a), a]
+}
+
+/// `base`, a premultiplied backdrop pixel (channels 0–255), with `add` (levels, below 0 darkens)
+/// added to its colour, at coverage `c`. Where that is more than the backdrop's alpha holds (all of
+/// it over a transparent backdrop, an export with nothing under the glass), the alpha rises with
+/// it, so the light shows there too.
+fn lit(base: [f32; 4], add: f32, c: f32) -> [u8; 4] {
+    let [r, g, b, a] = base;
+    let (r, g, b) = (r + add, g + add, b + add);
+    let a = a.max(0.0).max(r).max(g).max(b).min(255.0);
+    [r, g, b, a].map(|v| (v.clamp(0.0, a) * c).round().clamp(0.0, 255.0) as u8)
+}
+
 /// Bilinear sample of premultiplied `p` at pixel coordinates `(x, y)` (centres at +0.5), each
 /// channel 0..=255; transparent outside.
 fn sample(p: &Pixmap, x: f32, y: f32) -> [f32; 4] {
@@ -188,17 +302,6 @@ fn sample(p: &Pixmap, x: f32, y: f32) -> [f32; 4] {
         top + (bot - top) * ty
     })
 }
-
-/// The furthest in (pixels) the rim light is worth half a level or more: where
-/// `255 × intensity × e^(−d / band)` falls to 0.5, at most [`MAX_LIGHT_PX`] (0 for no light).
-fn light_reach(band: f64, intensity: f64) -> f64 {
-    let k = 255.0 * intensity / 0.5;
-    if k > 1.0 && band.is_finite() { (band * k.ln()).min(MAX_LIGHT_PX) } else { 0.0 }
-}
-
-/// The light reaches no further in than this many pixels (a wide light on a deep pane at a high
-/// zoom would otherwise need a huge margin of coverage around every cut).
-const MAX_LIGHT_PX: f64 = 512.0;
 
 /// A shape's coverage (alpha), distance to its edge and smoothed inward normals over a window of
 /// pixels whose top-left pixel is (`x0`, `y0`).
@@ -353,9 +456,19 @@ fn shape_fields(shape: &Outline, xf: Affine, w: u32, h: u32, m: u32, r: usize) -
     Some((Arc::new(Fields::new(&cov, -i64::from(m), -i64::from(m), r)), (0, 0)))
 }
 
-/// [`shape_fields`] for a whole shape, from the cache; `None` when it isn't kept (first asked for
-/// in this render, too big, or its transform too far out).
-fn whole_shape(shape: &Outline, xf: Affine, m: u32, r: usize) -> Option<(Arc<Fields>, (i64, i64))> {
+/// A layer transform split so the same shape at the same zoom lands on the same pixels of its own
+/// frame wherever a render puts it or cuts it (see [`own_frame`]).
+struct OwnFrame {
+    /// The whole pixels of the translation: the shift from layer pixels to the shape's own frame.
+    shift: (i64, i64),
+    /// The translation's fraction of a pixel, in steps of 1/65536.
+    frac: (i64, i64),
+    /// Local coordinates → the shape's own frame: the linear part and that fraction.
+    xf: Affine,
+}
+
+/// `xf` (local → layer pixels) split into its [`OwnFrame`]; `None` for a translation too far out.
+fn own_frame(xf: Affine) -> Option<OwnFrame> {
     let [a, b, c, d, e, f] = xf.as_coeffs();
     // The translation in steps of 1/65536 px (far finer than the rasteriser's 1/64, coarse enough
     // that rounding errors in where a render starts land on the same step), its whole pixels (the
@@ -368,7 +481,14 @@ fn whole_shape(shape: &Outline, xf: Affine, m: u32, r: usize) -> Option<(Arc<Fie
     let (qe, qf) = (q(e)?, q(f)?);
     let shift = (qe.div_euclid(STEPS as i64), qf.div_euclid(STEPS as i64));
     let frac = (qe.rem_euclid(STEPS as i64), qf.rem_euclid(STEPS as i64));
-    let own = Affine::new([a, b, c, d, frac.0 as f64 / STEPS, frac.1 as f64 / STEPS]);
+    Some(OwnFrame { shift, frac, xf: Affine::new([a, b, c, d, frac.0 as f64 / STEPS, frac.1 as f64 / STEPS]) })
+}
+
+/// [`shape_fields`] for a whole shape, from the cache; `None` when it isn't kept (first asked for
+/// in this render, too big, or its transform too far out).
+fn whole_shape(shape: &Outline, xf: Affine, m: u32, r: usize) -> Option<(Arc<Fields>, (i64, i64))> {
+    let [a, b, c, d, _, _] = xf.as_coeffs();
+    let OwnFrame { shift, frac, xf: own } = own_frame(xf)?;
     let bb = (own * shape.0.clone()).bounding_box();
     let (x0, y0, x1, y1) = (bb.x0.floor(), bb.y0.floor(), bb.x1.ceil(), bb.y1.ceil());
     if ![x0, y0, x1, y1].iter().all(|v| v.is_finite() && v.abs() < 1e9) {
@@ -411,28 +531,26 @@ pub fn glass(g: &Glass, frame: EffectFrame<'_>) -> Option<Pixmap> {
     let EffectFrame { shape, back, pad, size: (w, h), xf, scale } = frame;
     let g = g.sanitized();
     let depth = (g.depth * scale).clamp(1.0, 1024.0);
-    let band = (depth * (0.15 + 0.35 * g.splay)).max(1.0);
-    let reach = light_reach(band, g.light_intensity);
+    let bevel = (BEVEL * scale).min(1024.0);
     let r = (depth * 0.1).clamp(1.0, 8.0) as usize;
     // Coverage with a margin, so wherever the layer is cut every distance the pixels read is
-    // exact: the bend's (within `depth`), the light's (within `reach`) and those the normals are
-    // smoothed from (2r + 1 further).
-    let m = depth.max(reach).ceil() as u32 + 4 * r as u32 + 4;
+    // exact: the bend's and the gradient's (within `depth` + `bevel`; the light lies on the bevel)
+    // and those the normals are smoothed from (2r + 1 further).
+    let m = (depth + bevel).ceil() as u32 + 4 * r as u32 + 4;
     let (fields, shift) = shape_fields(shape, xf, w, h, m, r)?;
     let mut frosted = back.clone();
     fx::blur(&mut frosted, g.frost / 2.0 * scale);
     let ang = g.light_angle.to_radians();
     let light = (ang.sin() as f32, -ang.cos() as f32);
-    let bend_max = (g.refraction * depth) as f32;
-    let fringe = (g.dispersion * 0.25) as f32;
-    let power = (6.0 - 5.0 * g.splay) as f32;
-    let (band, reach) = (band as f32, reach as f32);
-    // The falloff, lowered by its value at `reach` and scaled back to 1 at the edge, so the light
-    // fades out to 0 at `reach` instead of stopping there.
-    let floor = (-reach / band).exp();
-    let fall = 1.0 - floor;
-    let intensity = g.light_intensity as f32;
-    let depth = depth as f32;
+    // The layer's centre in its own frame (see `own_frame`), which `splay` bends away from: the
+    // direction to it is the same wherever a render puts or cuts the layer.
+    let local_centre = shape.0.bounding_box().center();
+    let ((sx, sy), centre) = match own_frame(xf) {
+        Some(own) => (own.shift, own.xf * local_centre),
+        None => ((0, 0), xf * local_centre),
+    };
+    let (refraction, dispersion, bevel) = (g.refraction as f32, (g.dispersion * Glass::DISPERSION_SPREAD) as f32, bevel as f32);
+    let (splay, intensity, depth) = (g.splay as f32, g.light_intensity as f32, depth as f32);
     let mut out = Pixmap::new(w, h)?;
     let dst = out.data_mut();
     for y in 0..h as usize {
@@ -441,34 +559,37 @@ pub fn glass(g: &Glass, frame: EffectFrame<'_>) -> Option<Pixmap> {
             if c <= 0.0 {
                 continue;
             }
-            let t = (d / depth).min(1.0);
-            let bend = bend_max * (1.0 - t) * (1.0 - t);
             let (bx, by) = (x as f32 + pad as f32 + 0.5, y as f32 + pad as f32 + 0.5);
-            let base = if bend == 0.0 {
-                // Nothing bends (past `depth`, or no refraction): the three channels' samples are
-                // at the same point, so one sample.
-                let s = sample(&frosted, bx, by);
-                [s[0].min(s[3]), s[1].min(s[3]), s[2].min(s[3]), s[3]]
+            let (base, add) = if d >= depth + bevel {
+                // Past the curve nothing bends and no light falls (the rim light and the gradient
+                // are 0 there): the channels' samples are at the same point, so one sample.
+                (dispersed(&frosted, bx, by, 0.0, 0.0, 0.0), 0.0)
             } else {
-                let at = |k: f32| sample(&frosted, bx + inward.0 * bend * k, by + inward.1 * bend * k);
-                let (rs, gs, bs) = (at(1.0 - fringe), at(1.0), at(1.0 + fringe));
-                let a = rs[3].max(gs[3]).max(bs[3]);
-                [rs[0].min(a), gs[1].min(a), bs[2].min(a), a]
-            };
-            // The rim catches the light where it faces it, and half as much opposite. It fades out
-            // by `reach` and is none past it, wherever the layer is cut.
-            let hl = if d < reach && fall > 0.0 {
+                // The curve's outward direction: the edge's normal, turned by `splay` towards the
+                // way away from the centre (not renormalised: where the two part, the bend is less).
+                let away = if splay > 0.0 {
+                    let px = ((x as i64 - sx) as f64 + 0.5 - centre.x) as f32;
+                    let py = ((y as i64 - sy) as f64 + 0.5 - centre.y) as f32;
+                    let len = (px * px + py * py).sqrt();
+                    if len > 1e-6 { (px / len, py / len) } else { (0.0, 0.0) }
+                } else {
+                    (0.0, 0.0)
+                };
+                let out_dir = (-inward.0 * (1.0 - splay) + away.0 * splay, -inward.1 * (1.0 - splay) + away.1 * splay);
+                // No refraction: nothing bends, so one sample (`dispersed` with no move).
+                let bend = bend_at(d, depth, bevel, refraction);
+                let k = if bend == 0.0 { 0.0 } else { dispersion };
+                let base = dispersed(&frosted, bx, by, -out_dir.0 * bend, -out_dir.1 * bend, k);
+                // The bevel catches the light as a line added to the backdrop, by how much the edge
+                // faces it; across the curve a faint gradient, darker on the side facing it.
                 let facing = -(inward.0 * light.0 + inward.1 * light.1);
-                let spec = facing.max(0.0).powf(power) + 0.5 * (-facing).max(0.0).powf(power);
-                (intensity * spec * ((-d / band).exp() - floor) / fall).clamp(0.0, 1.0)
-            } else {
-                0.0
+                let rim = rim_light_at(d, bevel) * catches(facing);
+                let sheen = -(out_dir.0 * light.0 + out_dir.1 * light.1) * sheen_at(d, depth, bevel) * BROAD;
+                (base, 255.0 * intensity * (rim + sheen))
             };
             let i = (y * w as usize + x) * 4;
             if let Some(p) = dst.get_mut(i..i + 4) {
-                for (o, v) in p.iter_mut().zip(base) {
-                    *o = ((v * (1.0 - hl) + 255.0 * hl) * c).round().clamp(0.0, 255.0) as u8;
-                }
+                p.copy_from_slice(&lit(base, add, c));
             }
         }
     }
@@ -478,6 +599,101 @@ pub fn glass(g: &Glass, frame: EffectFrame<'_>) -> Option<Pixmap> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bend at depth 20, refraction 0.8 and a 1-unit bevel, x units in from the edge: the
+    /// reference profile's values.
+    #[test]
+    fn the_bend_follows_the_thick_lens_profile() {
+        let table = [
+            (0.10, 3.1968),
+            (0.25, 3.1968),
+            (0.50, 6.8543),
+            (0.75, 11.4263),
+            (1.00, 15.9982),
+            (2.0, 13.3707),
+            (4.0, 9.0591),
+            (6.0, 5.8457),
+            (8.0, 3.5426),
+            (10.0, 1.9742),
+            (16.0, 0.1250),
+            (20.0, 0.0004),
+            (21.0, 0.0),
+            (40.0, 0.0),
+        ];
+        for (x, want) in table {
+            let got = bend_at(x, 20.0, 1.0, 0.8);
+            assert!((got - want).abs() < 1e-3, "x {x}: {got} vs {want}");
+        }
+        // No refraction, no bend; never more than 0.999 × depth, never outwards.
+        assert_eq!(bend_at(0.5, 20.0, 1.0, 0.0), 0.0);
+        for i in 0..400 {
+            let x = i as f32 * 0.1;
+            let b = bend_at(x, 20.0, 1.0, 1.0);
+            assert!((0.0..=0.999 * 20.0).contains(&b), "x {x}: {b}");
+        }
+        // A depth thinner than the bevel (zoomed far in) still gives numbers.
+        assert!(bend_at(0.5, 1.0, 8.0, 1.0).is_finite());
+        // `Glass::max_bend`, which sizes the backdrop read around a pane, bounds the whole bend.
+        for refraction in [0.3, 0.8, 1.0] {
+            let most = (0..800).map(|i| bend_at(i as f32 * 0.05, 20.0, 1.0, refraction as f32)).fold(0.0f32, f32::max);
+            let bound = Glass { refraction, depth: 20.0, dispersion: 0.0, ..Glass::default() }.max_bend();
+            assert!(f64::from(most) <= bound + 1e-4, "refraction {refraction}: {most} past {bound}");
+        }
+    }
+
+    /// Dispersion off is one sample at the moved point; on, the channels split along the move, red
+    /// further and blue less, and a flat backdrop stays flat.
+    #[test]
+    fn dispersion_splits_the_channels_along_the_bend() {
+        // A 40 × 1 ramp: red, green and blue all rise with x.
+        let mut p = Pixmap::new(40, 1).unwrap();
+        for (i, px) in p.data_mut().chunks_exact_mut(4).enumerate() {
+            let v = (i * 6) as u8;
+            px.copy_from_slice(&[v, v, v, 255]);
+        }
+        let one = sample(&p, 10.5 + 8.0, 0.5);
+        let off = dispersed(&p, 10.5, 0.5, 8.0, 0.0, 0.0);
+        assert_eq!(off, [one[0], one[1], one[2], one[3]]);
+        let on = dispersed(&p, 10.5, 0.5, 8.0, 0.0, 1.0);
+        assert!(on[0] > on[1] && on[1] > on[2], "{on:?}");
+        assert!((on[1] - one[1]).abs() < 1e-3, "green stays centred on the move: {on:?} vs {one:?}");
+        let mut flat = Pixmap::new(40, 1).unwrap();
+        flat.fill(tiny_skia::Color::from_rgba8(90, 120, 200, 255));
+        let f = dispersed(&flat, 10.5, 0.5, 8.0, 0.0, 1.0);
+        assert!(f.iter().zip([90.0, 120.0, 200.0, 255.0]).all(|(a, b)| (a - b).abs() < 1e-3), "{f:?}");
+        // One white pixel on black: only the weighted steps that reach it pick it up, red and green
+        // from opposite ends of their windows (the same amount), blue none.
+        let mut impulse = Pixmap::new(40, 1).unwrap();
+        impulse.fill(tiny_skia::Color::BLACK);
+        impulse.data_mut()[20 * 4..21 * 4].copy_from_slice(&[255, 255, 255, 255]);
+        let spread = dispersed(&impulse, 10.5, 0.5, 8.0, 0.0, 1.0);
+        assert!((spread[0] - 33.392857).abs() < 1e-3 && (spread[1] - 33.392857).abs() < 1e-3, "{spread:?}");
+        assert_eq!(spread[2], 0.0);
+    }
+
+    /// At full dispersion red's furthest step stays within `Glass::max_bend` of the pixel, all
+    /// along the bend, so the backdrop read around a pane covers it: one white pixel further out
+    /// than that is never seen.
+    #[test]
+    fn full_dispersion_reads_no_further_than_max_bend() {
+        let bound = Glass { refraction: 1.0, depth: 20.0, dispersion: 1.0, ..Glass::default() }.max_bend() as f32;
+        let k = Glass::DISPERSION_SPREAD as f32;
+        let mut furthest = 0usize;
+        for i in 0..100 {
+            let bend = bend_at(i as f32 * 0.25, 20.0, 1.0, 1.0);
+            for at in 0..40 {
+                let mut impulse = Pixmap::new(40, 1).unwrap();
+                impulse.fill(tiny_skia::Color::BLACK);
+                impulse.data_mut()[at * 4..at * 4 + 4].copy_from_slice(&[255, 255, 255, 255]);
+                let s = dispersed(&impulse, 0.5, 0.5, bend, 0.0, k);
+                if s[0].max(s[1]).max(s[2]) > 0.0 {
+                    furthest = furthest.max(at);
+                }
+            }
+        }
+        // A sample `o` pixels along picks up the pixel `at` while |o − at| < 1.
+        assert!(furthest > 0 && (furthest as f32) < bound + 1.0, "pixel {furthest} seen, past {bound}");
+    }
 
     #[test]
     fn distance_of_a_square() {
@@ -515,14 +731,32 @@ mod tests {
         assert!(c.held <= 100 && !c.map.contains_key(&key(4)));
     }
 
+    /// The rim light and the gradient across the curve at depth 20 and a 1-unit bevel, x units in
+    /// from the edge: the reference profile's values.
     #[test]
-    fn light_reach_is_where_the_light_falls_under_half_a_level() {
-        let r = light_reach(10.0, 1.0);
-        assert!((255.0 * (-r / 10.0).exp() - 0.5).abs() < 1e-9, "{r}");
-        // No light, too faint to show, or a band that isn't a number: it reaches nowhere.
-        for (band, intensity) in [(10.0, 0.0), (10.0, 0.5 / 255.0), (f64::NAN, 1.0), (f64::INFINITY, 1.0)] {
-            assert_eq!(light_reach(band, intensity), 0.0, "{band} {intensity}");
+    fn the_light_lies_on_the_bevel_and_the_gradient_across_the_curve() {
+        for (x, rim, sheen) in [
+            (0.10, 1.0, 1.0),
+            (0.25, 0.9888, 1.0),
+            (0.50, 0.6843, 1.0),
+            (0.75, 0.2330, 1.0),
+            (1.00, 0.0, 1.0),
+            (2.0, 0.0, 0.8975),
+            (4.0, 0.0, 0.7091),
+            (6.0, 0.0, 0.5429),
+            (8.0, 0.0, 0.3989),
+            (16.0, 0.0, 0.0443),
+            (20.0, 0.0, 0.0),
+            (30.0, 0.0, 0.0),
+        ] {
+            assert!((rim_light_at(x, 1.0) - rim).abs() < 1e-3, "rim at {x}: {}", rim_light_at(x, 1.0));
+            assert!((sheen_at(x, 20.0, 1.0) - sheen).abs() < 1e-3, "gradient at {x}: {}", sheen_at(x, 20.0, 1.0));
         }
-        assert_eq!(light_reach(1e6, 1.0), MAX_LIGHT_PX);
+        // Facing the light fully, at 45° (cos 0.707) and side on; the opposite side 0.6 as much.
+        assert!((catches(1.0) - 1.0).abs() < 1e-6);
+        assert!((catches(std::f32::consts::FRAC_1_SQRT_2) - 0.574).abs() < 1e-3, "{}", catches(std::f32::consts::FRAC_1_SQRT_2));
+        assert_eq!(catches(0.0), 0.0);
+        assert!((catches(-1.0) - 0.6).abs() < 1e-6);
+        assert!((catches(-std::f32::consts::FRAC_1_SQRT_2) - 0.6 * 0.574).abs() < 1e-3);
     }
 }
